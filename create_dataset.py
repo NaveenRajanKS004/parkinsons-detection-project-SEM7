@@ -1,21 +1,10 @@
-from flask import Flask, request, render_template, jsonify
-import pickle
-import numpy as np
+import os
+import pandas as pd
 import parselmouth
 from parselmouth.praat import call
-import os
+import numpy as np
 
-app = Flask(__name__)
-
-# Load ONLY the NEW simpler model
-try:
-    with open('parkinsons_model_simple.pkl', 'rb') as f:
-        model = pickle.load(f)
-except FileNotFoundError:
-    print("ERROR: Model file 'parkinsons_model_simple.pkl' not found.")
-    print("Please run 'python retrain_model.py' first to create it.")
-    exit()
-
+# This is the exact same function from our app.py
 def extract_features(file_path):
     try:
         sound = parselmouth.Sound(file_path)
@@ -43,37 +32,39 @@ def extract_features(file_path):
             apq3_shimmer, apq5_shimmer, apq11_shimmer, dda_shimmer, nhr, hnr
         ]
     except Exception as e:
-        print(f"Error extracting features: {e}")
+        print(f"Could not process {os.path.basename(file_path)}: {e}")
         return None
 
-@app.route('/')
-def home():
-    return render_template('index.html')
+# The names of the features we are extracting
+feature_names = [
+    'MDVP:Fo(Hz)', 'MDVP:Fhi(Hz)', 'MDVP:Flo(Hz)', 'MDVP:Jitter(%)', 
+    'MDVP:Jitter(Abs)', 'MDVP:RAP', 'MDVP:PPQ', 'Jitter:DDP', 'MDVP:Shimmer', 
+    'MDVP:Shimmer(dB)', 'Shimmer:APQ3', 'Shimmer:APQ5', 'MDVP:APQ', 
+    'Shimmer:DDA', 'NHR', 'HNR'
+]
 
-@app.route('/predict', methods=['POST'])
-def predict():
-    if 'file' not in request.files:
-        return jsonify({'error': 'No audio file found'}), 400
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({'error': 'No selected file'}), 400
-    if file:
-        temp_dir = 'temp_audio'
-        if not os.path.exists(temp_dir):
-            os.makedirs(temp_dir)
-        temp_path = os.path.join(temp_dir, file.filename)
-        file.save(temp_path)
-        raw_features = extract_features(temp_path)
-        os.remove(temp_path)
-        if raw_features is None:
-            return jsonify({'error': 'Feature extraction failed.'}), 400
-        features_array = np.array(raw_features).reshape(1, -1)
-        # --- NO SCALER NEEDED ---
-        prediction = model.predict(features_array)
-        probabilities = model.predict_proba(features_array)[0]
-        confidence = probabilities[int(prediction[0])]
-        result = {'prediction': int(prediction[0]),'confidence': float(confidence)}
-        return jsonify(result)
+# Process all audio files and build our dataset
+data_rows = []
+# Process healthy controls (status=0)
+for filename in os.listdir('HC_AH'):
+    if filename.endswith('.wav'):
+        filepath = os.path.join('HC_AH', filename)
+        features = extract_features(filepath)
+        if features:
+            data_rows.append(features + [0]) # Add features and status label 0
 
-if __name__ == '__main__':
-    app.run(debug=True)
+# Process Parkinson's patients (status=1)
+for filename in os.listdir('PD_AH'):
+    if filename.endswith('.wav'):
+        filepath = os.path.join('PD_AH', filename)
+        features = extract_features(filepath)
+        if features:
+            data_rows.append(features + [1]) # Add features and status label 1
+
+# Create a DataFrame and save it to a new CSV file
+column_names = feature_names + ['status']
+df = pd.DataFrame(data_rows, columns=column_names)
+df.to_csv('tremorsense_dataset.csv', index=False)
+
+print(f"--- Success! ---")
+print(f"Created new dataset 'tremorsense_dataset.csv' with {len(df)} samples.")
